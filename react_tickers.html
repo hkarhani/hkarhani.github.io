@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Market Tickers</title>
+    <style>
+        :root {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a1a;
+            color: white;
+        }
+        
+        body {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        #search {
+            flex: 1;
+            padding: 12px;
+            background: #252525;
+            border: 1px solid #3d3d3d;
+            color: white;
+            border-radius: 4px;
+        }
+
+        #pageSize {
+            padding: 12px;
+            background: #252525;
+            border: 1px solid #3d3d3d;
+            color: white;
+            border-radius: 4px;
+        }
+
+        .grid-header {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+            background: #2d2d2d;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .header-item {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 8px;
+        }
+
+        .header-item:hover {
+            background: #363636;
+        }
+
+        .sort-arrow {
+            margin-left: 8px;
+            opacity: 0.6;
+        }
+
+        .instrument-row {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+            background: #252525;
+            border-bottom: 1px solid #3d3d3d;
+        }
+
+        .instrument-row:nth-child(even) {
+            background: #2a2a2a;
+        }
+
+        .price-up {
+            color: #4CAF50;
+        }
+
+        .price-down {
+            color: #FF5252;
+        }
+
+        .updated {
+            background-color: #3d3d3d !important;
+            transition: background-color 0.3s;
+        }
+
+        .sorted {
+            background: #363636;
+        }
+
+        .pagination {
+            margin-top: 20px;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .page-btn {
+            padding: 8px 16px;
+            background: #252525;
+            border: 1px solid #3d3d3d;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .page-btn.active {
+            background: #363636;
+        }
+    </style>
+</head>
+<body>
+    <h1>Binance Market Tickers</h1>
+    <div class="controls">
+        <input type="text" id="search" placeholder="Search symbols...">
+        <select id="pageSize">
+            <option value="20">20 per page</option>
+            <option value="50">50 per page</option>
+            <option value="100">100 per page</option>
+        </select>
+    </div>
+    <div class="grid-header">
+        <div class="header-item" data-sort="symbol">
+            Symbol <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="price">
+            Last Price <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="change">
+            24h Change <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="high">
+            24h High <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="low">
+            24h Low <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="volume">
+            24h Volume <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="quoteVolume">
+            Quote Volume <span class="sort-arrow"></span>
+        </div>
+    </div>
+    <div id="container"></div>
+    <div class="pagination" id="pagination"></div>
+
+    <script>
+        const WS_URL = 'wss://fstream.binance.com/ws/!ticker@arr';
+        const instruments = new Map();
+        let currentSort = { column: 'symbol', direction: 1 };
+        let searchQuery = '';
+        let pageSize = 20;
+        let currentPage = 1;
+
+        // Formatting functions
+        const formatters = {
+            price: value => Number(value).toLocaleString(undefined, { 
+                minimumFractionDigits: 2, 
+                maximumFractionDigits: 8 
+            }),
+            percent: value => `${Number(value).toFixed(2)}%`,
+            volume: value => Number(value).toLocaleString(undefined, { 
+                maximumFractionDigits: 0 
+            })
+        };
+
+        // WebSocket connection
+        let socket = new WebSocket(WS_URL);
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            data.forEach(ticker => {
+                instruments.set(ticker.s, {
+                    symbol: ticker.s,
+                    price: parseFloat(ticker.c),
+                    change: parseFloat(ticker.P),
+                    high: parseFloat(ticker.h),
+                    low: parseFloat(ticker.l),
+                    volume: parseFloat(ticker.v),
+                    quoteVolume: parseFloat(ticker.q)
+                });
+            });
+            renderTable();
+        };
+
+        // Rendering
+        function renderTable() {
+            const container = document.getElementById('container');
+            const filtered = Array.from(instruments.values())
+                .filter(i => i.symbol.toLowerCase().includes(searchQuery.toLowerCase()))
+                .sort((a, b) => {
+                    const valA = a[currentSort.column];
+                    const valB = b[currentSort.column];
+                    return (valA > valB ? 1 : -1) * currentSort.direction;
+                });
+
+            // Pagination
+            const start = (currentPage - 1) * pageSize;
+            const paginated = filtered.slice(start, start + pageSize);
+            
+            container.innerHTML = '';
+            paginated.forEach(instrument => {
+                const row = document.createElement('div');
+                row.className = 'instrument-row';
+                row.innerHTML = `
+                    <div>${instrument.symbol}</div>
+                    <div class="price">${formatters.price(instrument.price)}</div>
+                    <div class="${instrument.change >= 0 ? 'price-up' : 'price-down'}">
+                        ${formatters.percent(instrument.change)}
+                    </div>
+                    <div>${formatters.price(instrument.high)}</div>
+                    <div>${formatters.price(instrument.low)}</div>
+                    <div>${formatters.volume(instrument.volume)}</div>
+                    <div>${formatters.volume(instrument.quoteVolume)}</div>
+                `;
+                container.appendChild(row);
+            });
+
+            renderPagination(filtered.length);
+        }
+
+        // Pagination controls
+        function renderPagination(totalItems) {
+            const totalPages = Math.ceil(totalItems / pageSize);
+            const pagination = document.getElementById('pagination');
+            pagination.innerHTML = '';
+            
+            for (let i = 1; i <= totalPages; i++) {
+                const btn = document.createElement('button');
+                btn.className = `page-btn ${i === currentPage ? 'active' : ''}`;
+                btn.textContent = i;
+                btn.onclick = () => {
+                    currentPage = i;
+                    renderTable();
+                };
+                pagination.appendChild(btn);
+            }
+        }
+
+        // Event handlers
+        document.getElementById('search').addEventListener('input', (e) => {
+            searchQuery = e.target.value;
+            currentPage = 1;
+            renderTable();
+        });
+
+        document.getElementById('pageSize').addEventListener('change', (e) => {
+            pageSize = parseInt(e.target.value);
+            currentPage = 1;
+            renderTable();
+        });
+
+        document.querySelectorAll('.header-item').forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.dataset.sort;
+                document.querySelectorAll('.sort-arrow').forEach(arrow => arrow.textContent = '');
+                
+                if (currentSort.column === column) {
+                    currentSort.direction *= -1;
+                } else {
+                    currentSort.column = column;
+                    currentSort.direction = 1;
+                }
+                
+                header.querySelector('.sort-arrow').textContent = 
+                    currentSort.direction === 1 ? '▲' : '▼';
+                renderTable();
+            });
+        });
+
+        // Initial render
+        renderTable();
+    </script>
+</body>
+</html>

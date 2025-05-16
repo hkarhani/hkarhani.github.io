@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Mark Price Tracker</title>
+    <style>
+        :root {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a1a;
+            color: white;
+        }
+        
+        body {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        #search {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            background: #252525;
+            border: 1px solid #3d3d3d;
+            color: white;
+            border-radius: 4px;
+        }
+
+        .grid-header {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+            background: #2d2d2d;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .header-item {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 8px;
+        }
+
+        .header-item:hover {
+            background: #363636;
+        }
+
+        .sort-arrow {
+            margin-left: 8px;
+            opacity: 0.6;
+        }
+
+        .instrument-row {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+            background: #252525;
+            border-bottom: 1px solid #3d3d3d;
+        }
+
+        .instrument-row:nth-child(even) {
+            background: #2a2a2a;
+        }
+
+        .price-up {
+            color: #4CAF50;
+        }
+
+        .price-down {
+            color: #FF5252;
+        }
+
+        .updated {
+            background-color: #3d3d3d !important;
+            transition: background-color 0.3s;
+        }
+
+        .sorted {
+            background: #363636;
+        }
+    </style>
+</head>
+<body>
+    <h1>Binance Mark Prices</h1>
+    <input type="text" id="search" placeholder="Search symbols...">
+    <div class="grid-header">
+        <div class="header-item" data-sort="symbol">
+            Symbol <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="price">
+            Mark Price <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="index">
+            Index Price <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="funding">
+            Funding Rate <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="nextFunding">
+            Next Funding <span class="sort-arrow"></span>
+        </div>
+        <div class="header-item" data-sort="time">
+            Time <span class="sort-arrow"></span>
+        </div>
+    </div>
+    <div id="container"></div>
+
+    <script>
+        const instruments = new Map();
+        const WS_URL = 'wss://fstream.binance.com/ws/!markPrice@arr';
+        const container = document.getElementById('container');
+        let socket = null;
+        let currentSort = { column: 'symbol', direction: 1 };
+        let searchQuery = '';
+
+        function formatPrice(price) {
+            return Number(price).toLocaleString(undefined, {
+                minimumFractionDigits: 4,
+                maximumFractionDigits: 8
+            });
+        }
+
+        function formatFundingRate(rate) {
+            return `${(parseFloat(rate) * 100).toFixed(4)}%`;
+        }
+
+        function formatTimestamp(timestamp) {
+            return new Date(timestamp).toLocaleTimeString();
+        }
+
+        function createRow(symbol) {
+            const row = document.createElement('div');
+            row.className = 'instrument-row';
+            row.dataset.symbol = symbol.toLowerCase();
+            row.innerHTML = `
+                <div>${symbol}</div>
+                <div class="price">-</div>
+                <div class="index-price">-</div>
+                <div class="funding-rate">-</div>
+                <div class="funding-time">-</div>
+                <div class="timestamp">-</div>
+            `;
+            container.appendChild(row);
+            return row;
+        }
+
+        function updateRow(row, data) {
+            const prevPrice = parseFloat(row.querySelector('.price').textContent.replace(/,/g, '')) || 0;
+            const newPrice = parseFloat(data.p);
+
+            // Update price with direction indicator
+            row.querySelector('.price').textContent = formatPrice(data.p);
+            row.querySelector('.price').classList.toggle('price-up', newPrice > prevPrice);
+            row.querySelector('.price').classList.toggle('price-down', newPrice < prevPrice);
+
+            // Update other fields
+            row.querySelector('.index-price').textContent = formatPrice(data.i);
+            row.querySelector('.funding-rate').textContent = formatFundingRate(data.r);
+            row.querySelector('.funding-time').textContent = formatTimestamp(data.T);
+            row.querySelector('.timestamp').textContent = formatTimestamp(data.E);
+
+            // Highlight update
+            row.classList.add('updated');
+            setTimeout(() => row.classList.remove('updated'), 300);
+            
+            applyFilterAndSort();
+        }
+
+        function getCellValue(row, column) {
+            const cells = {
+                symbol: () => row.dataset.symbol,
+                price: () => parseFloat(row.querySelector('.price').textContent.replace(/,/g, '')),
+                index: () => parseFloat(row.querySelector('.index-price').textContent.replace(/,/g, '')),
+                funding: () => parseFloat(row.querySelector('.funding-rate').textContent),
+                nextFunding: () => new Date(row.querySelector('.funding-time').textContent).getTime(),
+                time: () => new Date(row.querySelector('.timestamp').textContent).getTime()
+            };
+            return cells[column]();
+        }
+
+        function sortRows() {
+            const rows = Array.from(container.children)
+                .filter(row => row.style.display !== 'none');
+
+            rows.sort((a, b) => {
+                const aValue = getCellValue(a, currentSort.column);
+                const bValue = getCellValue(b, currentSort.column);
+                
+                if (typeof aValue === 'string') {
+                    return aValue.localeCompare(bValue) * currentSort.direction;
+                }
+                return (aValue - bValue) * currentSort.direction;
+            });
+
+            rows.forEach(row => container.appendChild(row));
+        }
+
+        function applyFilter() {
+            const query = searchQuery.toLowerCase();
+            container.querySelectorAll('.instrument-row').forEach(row => {
+                const symbol = row.dataset.symbol;
+                const matchesSearch = symbol.includes(query);
+                row.style.display = matchesSearch ? '' : 'none';
+            });
+        }
+
+        function applyFilterAndSort() {
+            applyFilter();
+            sortRows();
+        }
+
+        function handleHeaderClick(e) {
+            const header = e.target.closest('.header-item');
+            if (!header) return;
+
+            const column = header.dataset.sort;
+            const arrows = document.querySelectorAll('.sort-arrow');
+            
+            arrows.forEach(arrow => arrow.textContent = '');
+            document.querySelectorAll('.header-item').forEach(h => h.classList.remove('sorted'));
+            header.classList.add('sorted');
+
+            if (currentSort.column === column) {
+                currentSort.direction *= -1;
+            } else {
+                currentSort.column = column;
+                currentSort.direction = 1;
+            }
+
+            header.querySelector('.sort-arrow').textContent = 
+                currentSort.direction === 1 ? '▲' : '▼';
+
+            applyFilterAndSort();
+        }
+
+        function handleSearch(e) {
+            searchQuery = e.target.value.trim().toLowerCase();
+            applyFilterAndSort();
+        }
+
+        function connectWebSocket() {
+            socket = new WebSocket(WS_URL);
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    data.forEach(instrument => {
+                        const symbol = instrument.s;
+                        let row = instruments.get(symbol);
+                        
+                        if (!row) {
+                            row = createRow(symbol);
+                            instruments.set(symbol, row);
+                        }
+                        
+                        updateRow(row, instrument);
+                    });
+                } catch (error) {
+                    console.error('Error processing message:', error);
+                }
+            };
+
+            socket.onclose = () => {
+                console.log('WebSocket disconnected. Reconnecting...');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            socket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        // Initial setup
+        document.querySelector('.grid-header').addEventListener('click', handleHeaderClick);
+        document.getElementById('search').addEventListener('input', handleSearch);
+        connectWebSocket();
+
+        // Set initial sort
+        document.querySelector(`[data-sort="${currentSort.column}"]`).classList.add('sorted');
+        document.querySelector(`[data-sort="${currentSort.column}"] .sort-arrow`).textContent = '▲';
+
+        // Handle window close
+        window.addEventListener('beforeunload', () => {
+            if (socket) socket.close();
+        });
+    </script>
+</body>
+</html>
