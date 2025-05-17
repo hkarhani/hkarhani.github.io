@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Money Flow Analyzer</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    input, button { font-size: 1em; padding: 5px 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 5px; text-align: center; }
+    th { background-color: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <h2>Smart Money Flow Analyzer</h2>
+  <label for="symbol">Symbol (e.g. BTCUSDT):</label>
+  <input type="text" id="symbol" value="BTCUSDT">
+  <button onclick="startAnalyzer()">Start</button>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Signal</th>
+        <th>RollDom</th>
+        <th>ΔMid</th>
+        <th>Flow</th>
+        <th>MarkPrice</th>
+        <th>MarkΔ5s</th>
+        <th>Direction</th>
+      </tr>
+    </thead>
+    <tbody id="output"></tbody>
+  </table>
+
+  <script>
+    let ws, lastMark = null, flow = 0, markHistory = [], signalVals = [], midPrices = [];
+    let displayBuffer = [];
+
+    function startAnalyzer() {
+      const symbol = document.getElementById('symbol').value.toLowerCase();
+      if (ws) ws.close();
+
+      flow = 0;
+      markHistory = [];
+      signalVals = [];
+      midPrices = [];
+      displayBuffer = [];
+
+      ws = new WebSocket("wss://fstream.binance.com/stream?streams=" +
+        `${symbol}@depth5@100ms/` +
+        `${symbol}@aggTrade/` +
+        `${symbol}@markPrice@1s`
+      );
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        const data = msg.data;
+
+        if (!data || !data.e) return;
+
+        const now = new Date().toLocaleTimeString();
+
+        if (data.e === 'aggTrade') {
+          const qty = parseFloat(data.q);
+          const dir = data.m ? -qty : qty;
+          flow += dir;
+        }
+
+        if (data.e === 'markPriceUpdate') {
+          const price = parseFloat(data.p);
+          markHistory.push(price);
+          if (markHistory.length > 100) markHistory.shift();
+          lastMark = price;
+        }
+
+        if (data.e === 'depthUpdate') {
+          const bids = data.b.map(b => [parseFloat(b[0]), parseFloat(b[1])]);
+          const asks = data.a.map(a => [parseFloat(a[0]), parseFloat(a[1])]);
+          const mid = (bids[0][0] + asks[0][0]) / 2;
+
+          const totalBid = bids.reduce((a, [p, q]) => a + q, 0);
+          const totalAsk = asks.reduce((a, [p, q]) => a + q, 0);
+          const imbalance = (totalBid - totalAsk) / (totalBid + totalAsk);
+
+          let label = "NEUTRAL", score = 0;
+          if (imbalance > 0.8) { label = "EXTREME BUYERS"; score = 2; }
+          else if (imbalance > 0.5) { label = "BUYERS DOMINATION"; score = 1; }
+          else if (imbalance < -0.8) { label = "EXTREME SELLERS"; score = -2; }
+          else if (imbalance < -0.5) { label = "SELLERS DOMINATION"; score = -1; }
+
+          signalVals.push(score);
+          if (signalVals.length > 20) signalVals.shift();
+          midPrices.push(mid);
+          if (midPrices.length > 20) midPrices.shift();
+
+          const rollDom = signalVals.reduce((a, b) => a + b, 0);
+          const deltaMid = midPrices.length > 1 ? midPrices[midPrices.length - 1] - midPrices[0] : 0;
+          const deltaMark = markHistory.length > 5 ? (markHistory.at(-1) - markHistory.at(-5)) / markHistory.at(-5) * 100 : 0;
+
+          let direction = "Neutral";
+          if (rollDom > 0 && deltaMark > 0) direction = "Bullish";
+          else if (rollDom < 0 && deltaMark < 0) direction = "Bearish";
+          else if (rollDom > 0 && deltaMark < 0) direction = "Bearish Divergence";
+          else if (rollDom < 0 && deltaMark > 0) direction = "Bullish Divergence";
+
+          if (Date.now() - (window.lastRow || 0) > 5000) {
+            const row = [
+              now,
+              label,
+              rollDom,
+              deltaMid.toFixed(4),
+              flow.toFixed(1),
+              lastMark?.toFixed(5) || "-",
+              deltaMark.toFixed(3),
+              direction
+            ];
+            const html = `<tr>${row.map(r => `<td>${r}</td>`).join('')}</tr>`;
+            const output = document.getElementById('output');
+            output.insertAdjacentHTML('afterbegin', html);
+            if (output.rows.length > 15) output.deleteRow(15);
+            window.lastRow = Date.now();
+            flow = 0;
+          }
+        }
+      };
+    }
+  </script>
+</body>
+</html>
