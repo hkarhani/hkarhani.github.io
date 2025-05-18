@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1.0' />
+  <title>Crypto Market Structure Analyzer</title>
+  <script src='https://cdn.jsdelivr.net/npm/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js'></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    input, button { padding: 6px 10px; font-size: 1em; margin-right: 8px; }
+    #chart { width: 100%; height: 400px; margin-top: 20px; }
+    .zones p { margin: 4px 0; }
+    fieldset { margin-top: 10px; border: 1px solid #ccc; padding: 8px; display: inline-block; }
+    legend { padding: 0 5px; }
+  </style>
+</head>
+<body>
+  <h2>Crypto Market Structure Analyzer</h2>
+  <label>Symbol:
+    <input type='text' id='symbol' value='BTCUSDT' />
+  </label>
+  <fieldset>
+    <legend>Timeframe</legend>
+    <label><input type='radio' name='interval' value='15m' checked /> 15m</label>
+    <label><input type='radio' name='interval' value='1h' /> 1h</label>
+    <label><input type='radio' name='interval' value='1d' /> 1d</label>
+  </fieldset>
+  <button id='loadBtn'>Analyze</button>
+
+  <div class='zones'>
+    <p><strong>POC:</strong> <span id='poc'>-</span>
+       <strong>VAL:</strong> <span id='val'>-</span>
+       <strong>VAH:</strong> <span id='vah'>-</span></p>
+    <p><strong>1D MS:</strong> <span id='ms-1d'>-</span>
+       <strong>1H MS:</strong> <span id='ms-1h'>-</span>
+       <strong>15m MS:</strong> <span id='ms-15m'>-</span></p>
+    <p><strong>Buy Zone:</strong> <span id='buy-zone'>-</span>
+       <strong>Sell Zone:</strong> <span id='sell-zone'>-</span></p>
+    <p><strong>Legend:</strong>
+      <span style='color:green'>Buy Zone</span>,
+      <span style='color:orange'>Sell Zone</span>,
+      <span style='color:blue'>POC</span>,
+      <span style='color:red'>VAL</span>,
+      <span style='color:purple'>VAH</span>
+    </p>
+  </div>
+
+  <div id='chart'></div>
+
+  <script>
+    let chart = null;
+    let pricePrecision = 2;
+
+    function getSelectedInterval() {
+      return document.querySelector('input[name="interval"]:checked').value;
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', () => {
+      const sym = document.getElementById('symbol').value.toUpperCase();
+      localStorage.setItem('analyzerSymbol', sym);
+      localStorage.setItem('analyzerInterval', getSelectedInterval());
+      loadData();
+    });
+
+    document.querySelectorAll('input[name="interval"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        localStorage.setItem('analyzerInterval', getSelectedInterval());
+        loadData();
+      });
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedSym = localStorage.getItem('analyzerSymbol');
+      const savedInt = localStorage.getItem('analyzerInterval');
+      if (savedSym) document.getElementById('symbol').value = savedSym;
+      if (savedInt) {
+        const el = document.querySelector(`input[name="interval"][value="${savedInt}"]`);
+        if (el) el.checked = true;
+      }
+      loadData();
+      setInterval(() => window.location.reload(), 5 * 60 * 1000);
+    });
+
+    async function fetchKlines(symbol, interval, limit = 200) {
+      try {
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+        return res.ok ? await res.json() : [];
+      } catch {
+        return [];
+      }
+    }
+
+    async function fetchSymbolInfo(symbol) {
+      try {
+        const res = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+        if (res.ok) {
+          const data = await res.json();
+          const info = data.symbols.find(s => s.symbol === symbol);
+          pricePrecision = info?.pricePrecision ?? 2;
+        }
+      } catch {
+        pricePrecision = 2;
+      }
+    }
+
+    function determineStructure(candles) {
+      if (!candles.length || candles.length < 2) return 'N/A';
+      const highs = candles.map(c => +c[2]);
+      const lows = candles.map(c => +c[3]);
+      const i = highs.length - 1;
+      const lastH = highs[i], lastL = lows[i];
+      const prevH = highs[i-1], prevL = lows[i-1];
+      if (lastH > prevH && lastL > prevL) return 'Uptrend';
+      if (lastH < prevH && lastL < prevL) return 'Downtrend';
+      return 'Range';
+    }
+
+    function getZones(candles) {
+      if (!candles.length) return {};
+      const closes = candles.map(c => +c[4]);
+      const lows = candles.map(c => +c[3]);
+      const highs = candles.map(c => +c[2]);
+      const current = closes.at(-1);
+      const low = Math.min(...lows);
+      const high = Math.max(...highs);
+      return { buyLow: low, buyHigh: low + (current - low) * 0.382, sellLow: high - (high - current) * 0.382, sellHigh: high };
+    }
+
+    function computeProfile(candles) {
+      const bins = {};
+      candles.forEach(c => { bins[+c[4]] = (bins[+c[4]] || 0) + +c[5]; });
+      const entries = Object.entries(bins).map(([p, v]) => ({ price: +p, vol: v })).sort((a, b) => b.vol - a.vol);
+      const poc = entries[0]?.price ?? null;
+      const prices = entries.map(e => e.price);
+      return { poc, val: Math.min(...prices), vah: Math.max(...prices) };
+    }
+
+    async function loadData() {
+      const sym = document.getElementById('symbol').value.toUpperCase();
+      const interval = getSelectedInterval();
+      await fetchSymbolInfo(sym);
+      const [d1, h1, m15] = await Promise.all([ fetchKlines(sym, '1d'), fetchKlines(sym, '1h'), fetchKlines(sym, '15m') ]);
+      document.getElementById('ms-1d').textContent = determineStructure(d1);
+      document.getElementById('ms-1h').textContent = determineStructure(h1);
+      document.getElementById('ms-15m').textContent = determineStructure(m15);
+      const candles = interval === '1d' ? d1 : (interval === '1h' ? h1 : m15);
+      const zones = getZones(candles);
+      document.getElementById('buy-zone').textContent = `${zones.buyLow.toFixed(pricePrecision)} – ${zones.buyHigh.toFixed(pricePrecision)}`;
+      document.getElementById('sell-zone').textContent = `${zones.sellLow.toFixed(pricePrecision)} – ${zones.sellHigh.toFixed(pricePrecision)}`;
+      const profile = computeProfile(candles);
+      ['poc','val','vah'].forEach(id => document.getElementById(id).textContent = profile[id]?.toFixed(pricePrecision) ?? '-');
+      renderChart(candles, zones, profile);
+    }
+
+    function renderChart(candles, zones, profile) {
+      const seriesData = candles.map(c => ({ time: c[0] / 1000, open: +c[1], high: +c[2], low: +c[3], close: +c[4] }));
+      if (chart) chart.remove();
+      const priceFormat = { type: 'price', precision: pricePrecision, minMove: 1 / Math.pow(10, pricePrecision) };
+      chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        layout: { backgroundColor: '#fff', textColor: '#000' },
+        width: document.getElementById('chart').clientWidth,
+        height: 400,
+        timeScale: { borderColor: '#ccc' },
+        rightPriceScale: { borderColor: '#ccc', priceFormat },
+        localization: { priceFormatter: price => price.toFixed(pricePrecision) }
+      });
+      const candleSeries = chart.addCandlestickSeries({ priceFormat });
+      candleSeries.setData(seriesData);
+
+      // Buy zone shading
+      const buyArea = chart.addAreaSeries({ topColor: 'rgba(0,255,0,0.1)', bottomColor: 'rgba(0,255,0,0.02)', lineWidth: 0 });
+      buyArea.setData(seriesData.map(pt => ({ time: pt.time, value: zones.buyHigh }))); buyArea.applyOptions({ baseline: zones.buyLow });
+
+      // Sell zone shading
+      const sellArea = chart.addAreaSeries({ topColor: 'rgba(255,165,0,0.1)', bottomColor: 'rgba(255,165,0,0.02)', lineWidth: 0 });
+      sellArea.setData(seriesData.map(pt => ({ time: pt.time, value: zones.sellHigh }))); sellArea.applyOptions({ baseline: zones.sellLow });
+
+      // Zone start lines with tags
+      candleSeries.createPriceLine({ price: zones.buyHigh, color: 'darkgreen', lineWidth: 3, lineStyle: LightweightCharts.LineStyle.Solid, title: 'Buy Start', priceAxisLabelVisible: true });
+      candleSeries.createPriceLine({ price: zones.sellLow, color: 'darkorange', lineWidth: 3, lineStyle: LightweightCharts.LineStyle.Solid, title: 'Sell Start', priceAxisLabelVisible: true });
+
+      // Zone boundaries
+      candleSeries.createPriceLine({ price: zones.buyLow, color: 'green', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'Buy low', priceAxisLabelVisible: true });
+      candleSeries.createPriceLine({ price: zones.sellHigh, color: 'orange', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'Sell High', priceAxisLabelVisible: true });
+
+      // Profile lines with tags
+      if (profile.poc != null) candleSeries.createPriceLine({ price: profile.poc, color: 'blue', lineWidth: 2, title: 'POC', priceAxisLabelVisible: true });
+      if (profile.val != null) candleSeries.createPriceLine({ price: profile.val, color: 'red', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'VAL', priceAxisLabelVisible: true });
+      if (profile.vah != null) candleSeries.createPriceLine({ price: profile.vah, color: 'purple', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'VAH', priceAxisLabelVisible: true });
+
+      chart.timeScale().fitContent();
+    }
+  </script>
+</body>
+</html>
+
