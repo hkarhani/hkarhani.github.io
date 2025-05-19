@@ -1,0 +1,136 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Binance Futures Ready Signals</title>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    th { background-color: #f4f4f4; }
+    select { font-size: 16px; padding: 5px; margin: 5px; }
+    .chart-container { display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Binance Futures Ready Signals</h2>
+  <label for="timeframe">Timeframe:</label>
+  <select id="timeframe">
+    <option value="15m" selected>15m</option>
+    <option value="1h">1h</option>
+    <option value="1d">1d</option>
+  </select><label for="direction">Direction:</label> <select id="direction"> <option value="all" selected>All</option> <option value="long">Long Only</option> <option value="short">Short Only</option> </select>
+
+  <table id="signalsTable">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Direction</th>
+        <th>Entry</th>
+        <th>SL</th>
+        <th>TP</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>  <div id="chartArea"></div>  <script>
+    const BASE_URL = 'https://fapi.binance.com';
+
+    async function fetchTickers() {
+      const res = await fetch(`${BASE_URL}/fapi/v1/ticker/price`);
+      const data = await res.json();
+      return data.filter(d => d.symbol.endsWith('USDT') && !d.symbol.includes('_') && !d.symbol.includes('1000')).map(d => d.symbol);
+    }
+
+    async function fetchKlines(symbol, interval) {
+      const res = await fetch(`${BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=50`);
+      const data = await res.json();
+      return data.map(d => ({
+        time: d[0] / 1000,
+        open: parseFloat(d[1]),
+        high: parseFloat(d[2]),
+        low: parseFloat(d[3]),
+        close: parseFloat(d[4]),
+        volume: parseFloat(d[5])
+      }));
+    }
+
+    function calcVolumeProfile(klines) {
+      const priceBins = {};
+      klines.forEach(k => {
+        const price = Math.round(k.close * 100) / 100;
+        priceBins[price] = (priceBins[price] || 0) + k.volume;
+      });
+      const sorted = Object.entries(priceBins).sort((a, b) => b[1] - a[1]);
+      const poc = parseFloat(sorted[0][0]);
+      const prices = sorted.map(p => parseFloat(p[0]));
+      const vah = Math.max(...prices.slice(0, 10));
+      const val = Math.min(...prices.slice(0, 10));
+      return { poc, vah, val };
+    }
+
+    function displaySignals(signals) {
+      const tbody = document.querySelector("#signalsTable tbody");
+      tbody.innerHTML = "";
+
+      signals.sort((a, b) => Math.abs(a.entry - a.poc) - Math.abs(b.entry - b.poc));
+
+      signals.forEach(s => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td><a href="#" onclick="showChart('${s.symbol}')">${s.symbol}</a></td>
+          <td>${s.direction}</td>
+          <td>${s.entry.toFixed(4)}</td>
+          <td>${s.sl.toFixed(4)}</td>
+          <td>${s.tp.toFixed(4)}</td>
+          <td>${s.reason}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function loadSignals() {
+      const interval = document.getElementById("timeframe").value;
+      const filter = document.getElementById("direction").value;
+      const symbols = await fetchTickers();
+      const readySignals = [];
+
+      for (const symbol of symbols.slice(0, 50)) {
+        try {
+          const klines = await fetchKlines(symbol, interval);
+          const price = klines.at(-1).close;
+          const { poc, vah, val } = calcVolumeProfile(klines);
+
+          if (price >= val && price <= poc && (filter === 'all' || filter === 'long')) {
+            const sl = val - (poc - val) * 0.2;
+            const tp = price + (price - val) * 5;
+            readySignals.push({ symbol, direction: 'LONG', entry: price, sl, tp, reason: 'Buy Zone', poc, klines });
+          } else if (price >= poc && price <= vah && (filter === 'all' || filter === 'short')) {
+            const sl = vah + (vah - poc) * 0.2;
+            const tp = price - (vah - price) * 5;
+            readySignals.push({ symbol, direction: 'SHORT', entry: price, sl, tp, reason: 'Sell Zone', poc, klines });
+          }
+        } catch (e) { console.error(`Error loading ${symbol}`, e); }
+      }
+
+      window.signals = readySignals;
+      displaySignals(readySignals);
+    }
+
+    function showChart(symbol) {
+      const chartArea = document.getElementById("chartArea");
+      chartArea.innerHTML = `<h3>${symbol}</h3><div id="chart" style="height: 400px;"></div>`;
+      const chart = LightweightCharts.createChart(document.getElementById("chart"), { height: 400 });
+      const candleSeries = chart.addCandlestickSeries();
+      const signal = window.signals.find(s => s.symbol === symbol);
+      candleSeries.setData(signal.klines);
+
+      chart.addHistogramSeries({ color: 'rgba(0, 255, 0, 0.2)' }).setData([{ time: signal.klines.at(-1).time, value: signal.entry }]);
+    }
+
+    document.getElementById("timeframe").addEventListener("change", loadSignals);
+    document.getElementById("direction").addEventListener("change", loadSignals);
+    loadSignals();
+    setInterval(loadSignals, 60000);
+  </script></body>
+</html>
