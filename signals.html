@@ -11,14 +11,13 @@
   </style>
 </head>
 <body>
-
   <h1>Binance Futures Signals (1h/24h Movers)</h1>
   <button id="refreshBtn" class="btn">Refresh Signals</button>
   <div id="signals"></div>  <script>
     const refreshBtn = document.getElementById("refreshBtn");
     const signalsDiv = document.getElementById("signals");
     let ws;
-    let latestPrices = {};
+    let signalsState = [];
 
     async function fetchSignals() {
       signalsDiv.innerHTML = "<p>Loading...</p>";
@@ -41,7 +40,6 @@
         const klines = await klinesRes.json();
         const prices = klines.map(k => parseFloat(k[4]));
         const volumes = klines.map(k => parseFloat(k[5]));
-        const vwap = prices.reduce((acc, p, i) => acc + p * volumes[i], 0) / volumes.reduce((a, b) => a + b, 0);
         const sorted = [...prices].sort((a, b) => a - b);
         const poc = sorted[Math.floor(sorted.length / 2)];
         const buyLow = sorted[Math.floor(sorted.length * 0.2)];
@@ -50,33 +48,61 @@
         const sellHigh = sorted[Math.floor(sorted.length * 0.8)];
         const price = prices[prices.length - 1];
 
-        let signal = null, sl = null, tp = null;
-        if (price <= buyHigh) {
-          signal = "LONG";
-          sl = buyLow;
-          tp = price + 5 * (price - sl);
-        } else if (price >= sellLow) {
-          signal = "SHORT";
-          sl = sellHigh;
-          tp = price - 5 * (sl - price);
+        const entries = [];
+
+        if (price <= buyHigh && buyLow < price) {
+          const sl = buyLow;
+          const tp = price + 5 * (price - sl);
+          if (tp > price) {
+            entries.push({
+              type: "LONG",
+              sl: sl.toFixed(4),
+              tp: tp.toFixed(4),
+              zone: `${buyLow.toFixed(4)} - ${buyHigh.toFixed(4)}`,
+              proximity: Math.abs(price - buyHigh)
+            });
+          }
         }
 
-        if (signal) {
-          results.push({
-            symbol: mover.symbol,
-            signal,
-            price: price.toFixed(4),
-            poc: poc.toFixed(4),
-            zone: signal === "LONG" ? `${buyLow.toFixed(4)} - ${buyHigh.toFixed(4)}` : `${sellLow.toFixed(4)} - ${sellHigh.toFixed(4)}`,
-            sl: sl.toFixed(4),
-            tp: tp.toFixed(4)
+        if (price >= sellLow && sellHigh > price) {
+          const sl = sellHigh;
+          const tp = price - 5 * (sl - price);
+          if (tp < price) {
+            entries.push({
+              type: "SHORT",
+              sl: sl.toFixed(4),
+              tp: tp.toFixed(4),
+              zone: `${sellLow.toFixed(4)} - ${sellHigh.toFixed(4)}`,
+              proximity: Math.abs(price - sellLow)
+            });
+          }
+        }
+
+        if (entries.length > 0) {
+          entries.forEach(entry => {
+            results.push({
+              symbol: mover.symbol,
+              signal: entry.type,
+              price: price.toFixed(4),
+              poc: poc.toFixed(4),
+              zone: entry.zone,
+              sl: entry.sl,
+              tp: entry.tp,
+              proximity: entry.proximity
+            });
+            symbols.push(mover.symbol.toLowerCase());
           });
-          symbols.push(mover.symbol.toLowerCase());
         }
       }
 
-      renderSignals(results);
-      initWebSocket(symbols, results);
+      signalsState = results;
+      sortAndRender();
+      initWebSocket(symbols);
+    }
+
+    function sortAndRender() {
+      signalsState.sort((a, b) => a.proximity - b.proximity);
+      renderSignals(signalsState);
     }
 
     function renderSignals(signals) {
@@ -92,18 +118,32 @@
       `).join("");
     }
 
-    function initWebSocket(symbols, signals) {
+    function initWebSocket(symbols) {
       const stream = symbols.map(s => `${s}@miniTicker`).join("/");
       ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${stream}`);
+
       ws.onmessage = event => {
         const msg = JSON.parse(event.data);
         if (msg.data && msg.stream.includes("@miniTicker")) {
           const { s: symbol, c: close } = msg.data;
-          latestPrices[symbol] = parseFloat(close);
+          const price = parseFloat(close);
+
+          signalsState = signalsState.map(sig => {
+            if (sig.symbol === symbol) {
+              const proximity = sig.signal === "LONG"
+                ? Math.abs(price - parseFloat(sig.zone.split(" - ")[1]))
+                : Math.abs(price - parseFloat(sig.zone.split(" - ")[0]));
+              return { ...sig, price: price.toFixed(4), proximity };
+            }
+            return sig;
+          });
+
           const priceSpan = document.getElementById(`price-${symbol}`);
-          if (priceSpan) priceSpan.textContent = parseFloat(close).toFixed(4);
+          if (priceSpan) priceSpan.textContent = price.toFixed(4);
+          sortAndRender();
         }
       };
+
       ws.onerror = err => console.error("WebSocket error:", err);
       ws.onclose = () => console.log("WebSocket closed");
     }
