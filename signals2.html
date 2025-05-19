@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Smart Crypto Signal Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f8f9fa; }
+    h2 { color: #333; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #333; color: white; }
+    tr:hover { background-color: #f1f1f1; }
+    .long { color: green; font-weight: bold; }
+    .short { color: red; font-weight: bold; }
+    .near-entry { background-color: #d4edda; }
+  </style>
+</head>
+<body>
+  <h2>Filtered Trade Signals (Aligned with BTC Direction)</h2>
+  <p><strong>BTC Direction:</strong> <span id="btc-dir">Loading...</span></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Direction</th>
+        <th>Entry</th>
+        <th>SL</th>
+        <th>TP</th>
+        <th>Distance to Entry</th>
+      </tr>
+    </thead>
+    <tbody id="signals-body"></tbody>
+  </table>
+
+  <script>
+    const API_BASE = 'https://api.binance.com';
+
+    async function fetchBTCDirection() {
+      const res = await fetch(`${API_BASE}/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2`);
+      const data = await res.json();
+      const [prev, latest] = data.slice(-2);
+      const dir = latest[4] > prev[4] ? 'LONG' : 'SHORT';
+      document.getElementById('btc-dir').innerText = dir;
+      return dir;
+    }
+
+    async function fetchTopMovers() {
+      const res = await fetch(`${API_BASE}/api/v3/ticker/24hr`);
+      const tickers = await res.json();
+      return tickers
+        .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('BUSD'))
+        .sort((a, b) => Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent))
+        .slice(0, 50);
+    }
+
+    async function fetchKline(symbol) {
+      const res = await fetch(`${API_BASE}/api/v3/klines?symbol=${symbol}&interval=15m&limit=50`);
+      return await res.json();
+    }
+
+    async function generateSignal(symbol) {
+      const klines = await fetchKline(symbol);
+      const closes = klines.map(k => parseFloat(k[4]));
+      const high = Math.max(...closes);
+      const low = Math.min(...closes);
+      const last = closes[closes.length - 1];
+      const direction = (last > closes[0]) ? 'LONG' : 'SHORT';
+
+      let entry, sl, tp;
+      if (direction === 'LONG') {
+        entry = low;
+        sl = low - (high - low) * 0.2;
+        tp = entry + (entry - sl) * 5;
+      } else {
+        entry = high;
+        sl = high + (high - low) * 0.2;
+        tp = entry - (sl - entry) * 5;
+      }
+
+      const near = Math.abs(last - entry) < (high - low) * 0.1;
+
+      return {
+        symbol,
+        direction,
+        entry: entry.toFixed(4),
+        sl: sl.toFixed(4),
+        tp: tp.toFixed(4),
+        distance: Math.abs(last - entry).toFixed(4),
+        near
+      };
+    }
+
+    async function updateSignals() {
+      const btcDir = await fetchBTCDirection();
+      const movers = await fetchTopMovers();
+      const signalsBody = document.getElementById('signals-body');
+      signalsBody.innerHTML = '';
+
+      for (const ticker of movers) {
+        const symbol = ticker.symbol;
+        try {
+          const signal = await generateSignal(symbol);
+          if (signal.direction !== btcDir) continue;
+
+          const row = document.createElement('tr');
+          if (signal.near) row.classList.add('near-entry');
+          row.innerHTML = `
+            <td>${signal.symbol}</td>
+            <td class="${signal.direction.toLowerCase()}">${signal.direction}</td>
+            <td>${signal.entry}</td>
+            <td>${signal.sl}</td>
+            <td>${signal.tp}</td>
+            <td>${signal.distance}</td>
+          `;
+          signalsBody.appendChild(row);
+        } catch (err) {
+          console.warn(`Failed for ${symbol}:`, err);
+        }
+      }
+    }
+
+    updateSignals();
+    setInterval(updateSignals, 60000); // Refresh every 1 min
+  </script>
+</body>
+</html>
+
