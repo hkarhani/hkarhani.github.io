@@ -1,0 +1,113 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Binance Futures Signals</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+    .card { background: #fff; padding: 16px; margin-bottom: 12px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    .card strong { font-size: 18px; }
+    .btn { padding: 8px 16px; font-size: 16px; cursor: pointer; border: none; background: #007bff; color: white; border-radius: 6px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Binance Futures Signals (1h/24h Movers)</h1>
+  <button id="refreshBtn" class="btn">Refresh Signals</button>
+  <div id="signals"></div>  <script>
+    const refreshBtn = document.getElementById("refreshBtn");
+    const signalsDiv = document.getElementById("signals");
+    let ws;
+    let latestPrices = {};
+
+    async function fetchSignals() {
+      signalsDiv.innerHTML = "<p>Loading...</p>";
+      if (ws) ws.close();
+
+      const tickersRes = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+      const tickers = await tickersRes.json();
+
+      const movers = tickers
+        .map(t => ({ symbol: t.symbol, priceChangePercent: parseFloat(t.priceChangePercent) }))
+        .filter(t => t.symbol.endsWith("USDT"))
+        .sort((a, b) => Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent))
+        .slice(0, 20);
+
+      const results = [];
+      const symbols = [];
+
+      for (const mover of movers) {
+        const klinesRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${mover.symbol}&interval=1h&limit=100`);
+        const klines = await klinesRes.json();
+        const prices = klines.map(k => parseFloat(k[4]));
+        const volumes = klines.map(k => parseFloat(k[5]));
+        const vwap = prices.reduce((acc, p, i) => acc + p * volumes[i], 0) / volumes.reduce((a, b) => a + b, 0);
+        const sorted = [...prices].sort((a, b) => a - b);
+        const poc = sorted[Math.floor(sorted.length / 2)];
+        const buyLow = sorted[Math.floor(sorted.length * 0.2)];
+        const buyHigh = sorted[Math.floor(sorted.length * 0.4)];
+        const sellLow = sorted[Math.floor(sorted.length * 0.6)];
+        const sellHigh = sorted[Math.floor(sorted.length * 0.8)];
+        const price = prices[prices.length - 1];
+
+        let signal = null, sl = null, tp = null;
+        if (price <= buyHigh) {
+          signal = "LONG";
+          sl = buyLow;
+          tp = price + 5 * (price - sl);
+        } else if (price >= sellLow) {
+          signal = "SHORT";
+          sl = sellHigh;
+          tp = price - 5 * (sl - price);
+        }
+
+        if (signal) {
+          results.push({
+            symbol: mover.symbol,
+            signal,
+            price: price.toFixed(4),
+            poc: poc.toFixed(4),
+            zone: signal === "LONG" ? `${buyLow.toFixed(4)} - ${buyHigh.toFixed(4)}` : `${sellLow.toFixed(4)} - ${sellHigh.toFixed(4)}`,
+            sl: sl.toFixed(4),
+            tp: tp.toFixed(4)
+          });
+          symbols.push(mover.symbol.toLowerCase());
+        }
+      }
+
+      renderSignals(results);
+      initWebSocket(symbols, results);
+    }
+
+    function renderSignals(signals) {
+      signalsDiv.innerHTML = signals.map(sig => `
+        <div class="card">
+          <strong>${sig.symbol}</strong> - Signal: ${sig.signal}<br />
+          Current Price: $<span id="price-${sig.symbol}">${sig.price}</span><br />
+          POC: ${sig.poc}<br />
+          Zone: ${sig.zone}<br />
+          SL: ${sig.sl}<br />
+          TP: ${sig.tp}
+        </div>
+      `).join("");
+    }
+
+    function initWebSocket(symbols, signals) {
+      const stream = symbols.map(s => `${s}@miniTicker`).join("/");
+      ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${stream}`);
+      ws.onmessage = event => {
+        const msg = JSON.parse(event.data);
+        if (msg.data && msg.stream.includes("@miniTicker")) {
+          const { s: symbol, c: close } = msg.data;
+          latestPrices[symbol] = parseFloat(close);
+          const priceSpan = document.getElementById(`price-${symbol}`);
+          if (priceSpan) priceSpan.textContent = parseFloat(close).toFixed(4);
+        }
+      };
+      ws.onerror = err => console.error("WebSocket error:", err);
+      ws.onclose = () => console.log("WebSocket closed");
+    }
+
+    refreshBtn.onclick = fetchSignals;
+    fetchSignals();
+  </script></body>
+</html>
