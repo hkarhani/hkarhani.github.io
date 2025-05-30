@@ -1,0 +1,109 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>From $0 to Crypto Trader – Start Here</n  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
+    h1, h2 { color: #333; }
+    .toolbox, .analysis { margin-bottom: 30px; }
+    .toolbox ul { list-style: disc inside; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 8px 12px; border: 1px solid #ccc; text-align: center; }
+    th { background-color: #f4f4f4; }
+    button { padding: 8px 16px; font-size: 1em; }
+  </style>
+</head>
+<body>
+  <h1>From $0 to Crypto Trader – Start Here</h1>
+  <div class="toolbox">
+    <h2>Step 1: Master These 3 Tools</h2>
+    <ul>
+      <li><strong>RSI</strong> – Shows if price is too high (sell) or low (buy)
+        <ul>
+          <li>Above 70 = Overbought</li>
+          <li>Below 30 = Oversold</li>
+        </ul>
+      </li>
+      <li><strong>MACD</strong> – Spots trend changes
+        <ul>
+          <li>Lines crossing = Trend shifting</li>
+          <li>Green bars = Bulls winning</li>
+        </ul>
+      </li>
+      <li><strong>Moving Averages</strong> – Finds the real trend
+        <ul>
+          <li>50 above 200 = Good time to buy</li>
+          <li>50 below 200 = Be careful</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+  <div class="analysis">
+    <h2>Step 2: Practice Daily</h2>
+    <ul>
+      <li>Study charts every day</li>
+      <li>Start with small trades</li>
+      <li>Write down what works</li>
+    </ul>
+    <h2>Step 3: Stay Disciplined</h2>
+    <ul>
+      <li>No emotional trades</li>
+      <li>Stick to your plan</li>
+      <li>Learn from mistakes</li>
+    </ul>
+  </div>
+  <h2>Top and Bottom Futures Movers (24h)</h2>
+  <button id="refreshBtn">Refresh</button>
+  <h3>Top 10 Gainers</h3>
+  <table id="gainersTable">
+    <thead><tr><th>Symbol</th><th>Change %</th><th>Last Price</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h3>Top 10 Losers</h3>
+  <table id="losersTable">
+    <thead><tr><th>Symbol</th><th>Change %</th><th>Last Price</th></tr></thead>
+    <tbody></tbody>
+  </table>  <script>
+    async function fetchTickers() {
+      const url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
+      const res = await fetch(url);
+      return res.ok ? await res.json() : [];
+    }
+
+    function renderTable(data, tableId) {
+      const tbody = document.querySelector(`${tableId} tbody`);
+      tbody.innerHTML = '';
+      data.forEach(item => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${item.symbol}</td>
+          <td>${parseFloat(item.priceChangePercent).toFixed(2)}%</td>
+          <td>${parseFloat(item.lastPrice).toFixed(item.pricePrecision || 2)}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function updateMovers() {
+      const tickers = await fetchTickers();
+      // add symbol precision lookup
+      const infoRes = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      const infoData = infoRes.ok ? await infoRes.json() : null;
+      const precisionMap = {};
+      if (infoData) {
+        infoData.symbols.forEach(s => precisionMap[s.symbol] = s.pricePrecision);
+      }
+      // attach precision
+      tickers.forEach(t => t.pricePrecision = precisionMap[t.symbol] ?? 2);
+      tickers.sort((a,b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
+      const gainers = tickers.slice(0, 10);
+      const losers  = tickers.slice(-10).reverse();
+      renderTable(gainers, '#gainersTable');
+      renderTable(losers, '#losersTable');
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', updateMovers);
+    // initial load
+    updateMovers();
+  </script></body>
+</html>
